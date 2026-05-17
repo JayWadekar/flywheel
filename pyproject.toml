@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flywheel"
+version = "0.1.0"
+description = "Low-latency higher-mode parameter estimation workflow for NSBH mergers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+    "h5py",
+    "jupytext",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "scipy",
+]
+
+[project.optional-dependencies]
+gw = [
+    "cogwheel",
+    "gwpy",
+    "lalsuite",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
