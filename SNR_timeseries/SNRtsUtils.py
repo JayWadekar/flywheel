@@ -7,8 +7,41 @@
 import numpy as np
 import os
 import ast
-
+import h5py
 import SNRtsGlobals as glob
+
+##############################################################################
+# LOAD
+##############################################################################
+
+def load_population(name, nEventsUse=None, keys_skip=[]):
+    
+    """
+    Load a dictionary containing the events parameters in h5 file, compute some useful combinations and perform checks.
+    
+    :param str name: The name of the file to load the events from. This has to include the path and the ``h5`` or ``hdf5`` extension.
+    :param int or None nEventsUse: Number of the events in the given file to load.
+    :type kind: int or None
+    :param list(str) calculate_params: Parameters not present in the file to compute. The supported parameters are ``'LambdaTilde'``, ``'deltaLambda'``, ``'Lambda1'``, ``'Lambda2'``, ``'theta'``, ``'phi'``, ``'ra'``, ``'dec'``.
+    :param list(str) keys_skip: Parameters present in the file to skip.
+    
+    :return: Dictionary containing the loaded events, as in :py:data:`events`.
+    :rtype: dict(array, array, ...)
+    
+    """
+    
+    events={}
+    with h5py.File(name, 'r') as f:
+        for key in f.keys():
+            if key not in keys_skip:
+                events[key] = np.array(f[key][:])
+            else:
+                print('Skipping %s' %key)
+        if nEventsUse is not None:
+            for key in f.keys():
+                events[key]=events[key][:nEventsUse]
+    
+    return events
 
 ##############################################################################
 # ANGLES

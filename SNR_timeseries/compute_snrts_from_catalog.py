@@ -200,35 +200,6 @@ def get_events_subset(evs, detected):
     """
     return get_event(evs, np.argwhere(detected))    
 
-def load_population(name, nEventsUse=None, keys_skip=[]):
-    
-    """
-    Load a dictionary containing the events parameters in h5 file, compute some useful combinations and perform checks.
-    
-    :param str name: The name of the file to load the events from. This has to include the path and the ``h5`` or ``hdf5`` extension.
-    :param int or None nEventsUse: Number of the events in the given file to load.
-    :type kind: int or None
-    :param list(str) calculate_params: Parameters not present in the file to compute. The supported parameters are ``'LambdaTilde'``, ``'deltaLambda'``, ``'Lambda1'``, ``'Lambda2'``, ``'theta'``, ``'phi'``, ``'ra'``, ``'dec'``.
-    :param list(str) keys_skip: Parameters present in the file to skip.
-    
-    :return: Dictionary containing the loaded events, as in :py:data:`events`.
-    :rtype: dict(array, array, ...)
-    
-    """
-    
-    events={}
-    with h5py.File(name, 'r') as f:
-        for key in f.keys():
-            if key not in keys_skip:
-                events[key] = np.array(f[key])
-            else:
-                print('Skipping %s' %key)
-        if nEventsUse is not None:
-            for key in f.keys():
-                events[key]=events[key][:nEventsUse]
-    
-    return events
-
 def save_events(fname, data):
     """
     Store a dictionary containing the events parameters in ``h5`` file.
@@ -354,7 +325,7 @@ def mainMPI(i):
 
 parser = argparse.ArgumentParser(prog = 'compute_snrts_from_catalog.py', description='Executable to run ``SNR_timeseries`` on a catalog of events, with the possibility to parallelize over multiple CPUs, ready to use both on single machines and on clusters.')
 parser.add_argument("--fname_obs", default='', type=str, required=True, help='Name of the file containing the catalog, without the extension ``h5``.')
-parser.add_argument("--fname_snrs", default='', type=str, required=True, help='Name of the file containing the optimal SNRs associated with the catalog, with the extension ``txt``.')
+parser.add_argument("--fname_snrs", default='', type=str, required=False, help='Name of the file containing the optimal SNRs associated with the catalog, with the extension ``txt``.')
 parser.add_argument("--fout", default='test_ts', type=str, required=True, help='Path to output folder, which has to exist before the script is launched.')
 parser.add_argument("--wf_model",  default='LAL-IMRPhenomXHM', type=str, required=False, help='Name of the waveform model.')
 parser.add_argument("--batch_size", default=1, type=int, required=False, help='Size of the batch to be computed in vectorized form on each process.')
@@ -365,7 +336,7 @@ parser.add_argument("--idx_f", default=None, type=int, required=False, help='Ind
 parser.add_argument("--fmin", default=2., type=float, required=False, help='Minimum frequency of the grid, in Hz.')
 parser.add_argument("--fmax", default=4096., type=float, required=False, help='Maximum frequency of the grid, in Hz.')
 parser.add_argument("--net", nargs='+', default=['L1', ], type=str, required=False, help='The network of detectors to be used, separated by *single spacing*.')
-parser.add_argument("--psds", nargs='+', default=['ET-0000A-18.txt', ], type=str, required=False, help='The paths to PSDs of each detector in the network inside the folder ``psds/``, separated by *single spacing*.')
+parser.add_argument("--psds", nargs='+', default=['AplusDesign.txt', ], type=str, required=False, help='The paths to PSDs of each detector in the network inside the folder ``psds/``, separated by *single spacing*.')
 parser.add_argument("--mpi", default=0, type=int, required=False, help='Int specifying if the code has to parallelize using multiprocessing (``0``), or using MPI (``1``), suitable for clusters.')
 parser.add_argument("--lalargs", nargs='+', default=['HM'], type=str, required=False, help='Specifications of the waveform when using ``LAL`` interface, separated by *single spacing*.')
 parser.add_argument("--resume_run", default=0, type=int, required=False, help='Int specifying whether to resume previous run. In this case the parent seed structure is preserved.')
@@ -393,13 +364,17 @@ if __name__ =='__main__':
         raise ValueError('Path to catalog does not exist. Value entered: %s' %fname_obs)
     
     print('Loading events from %s...' %fname_obs)
-    events_loaded = load_population(fname_obs)
-    snrs_loaded   = np.array([np.loadtxt(FLAGS.fname_snrs)])
+    events_loaded = utils.load_population(fname_obs)
     
     keylist=list(events_loaded.keys())
     nevents_total = len(events_loaded[keylist[0]])
     print('This catalog has %s events.' %nevents_total)
     
+    if FLAGS.fname_snrs != '':
+        snrs_loaded = np.array([np.loadtxt(FLAGS.fname_snrs)])
+    else:
+        snrs_loaded = np.full_like(events_loaded[keylist[0]], FLAGS.snr_th + 1)
+        
     if FLAGS.idx_f is None:
         events_loaded = {k: events_loaded[k][FLAGS.idx_in:] for k in events_loaded.keys()}
         snrs_loaded = snrs_loaded[FLAGS.idx_in:]
