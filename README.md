@@ -1,10 +1,15 @@
 # flywheel
 
-`flywheel` contains the low-latency parameter-estimation workflow used to
-compare 22-only and 22+higher-mode inference for neutron-star--black-hole
-signals.  The code takes precomputed mode-by-mode SNR time series and
-higher-mode amplitude-ratio samples, then uses `cogwheel` to marginalize over
-extrinsic parameters.
+`flywheel` is a version of the
+[`cogwheel`](https://github.com/jroulet/cogwheel) library adapted for
+low-latency neutron-star--black-hole (NSBH) parameter estimation.  Earlier
+versions of this code were adapted for the coherent candidate-ranking statistic
+in the [`IAS-HM`](https://github.com/JayWadekar/gwIAS-HM) search pipeline.
+
+This repository provides a workflow to generate $(2,2)$ and $(2,2)$+higher-mode
+inference for NSBH signals.  The code takes precomputed mode-by-mode SNR time
+series and higher-mode amplitude-ratio samples, then uses `cogwheel`-style
+marginalization over extrinsic parameters.
 
 This repository is intended as a compact, public companion to the manuscript.
 It includes a small GW190814-like example dataset.  Larger generated
