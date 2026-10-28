@@ -22,6 +22,47 @@ import waveforms as wf
 import SNRtsCompute as tsCompute
 
 #####################################################################################
+# Option --fname_ML: the data are simulated as usual (injection parameters + noise fixed by --noise_parent_seed and
+# the catalog index), but they are filtered with the ML parameters found by compute_ML_from_catalog.py on the same
+# data. Without --fname_ML the data are filtered with the injection parameters.
+#####################################################################################
+
+# Keys of the ML_params files that are not parameters of the filter
+ML_NONPARAM_KEYS = ('catalog_idx', 'tGPS', 'ML_twoDeltalnL', 'ML_niter', 'ML_status', 'ML_fallback', 'ML_template_mismatch', 'ML_nfixed', 'ML_rerun')
+
+def check_ML_attrs(attrs, FLAGS, df):
+    '''
+    Check that the ML file was computed on the same data (signal and noise) as this run, using the settings stored
+    as attributes by compute_ML_from_catalog.py.
+    '''
+    if len(attrs) == 0:
+        print('WARNING: the ML file has no information on the settings used, cannot check that the data (and the noise) are the same as in this run.')
+        return
+    expected = {'wf_model': FLAGS.wf_model, 'lalargs': list(FLAGS.lalargs), 'fmin': FLAGS.fmin, 'fmax': FLAGS.fmax, 'df': df,
+                'net': list(FLAGS.net), 'psds': [os.path.basename(p) for p in FLAGS.psds], 'add_noise': FLAGS.add_noise}
+    if FLAGS.add_noise:
+        expected['noise_parent_seed'] = FLAGS.noise_parent_seed
+    mismatch = []
+    for k, v in expected.items():
+        if k not in attrs:
+            print('WARNING: %s not stored in the ML file, cannot check it.' %k)
+            continue
+        a = attrs[k]
+        if isinstance(v, list):
+            a = [x.decode() if isinstance(x, bytes) else str(x) for x in np.atleast_1d(a)]
+            same = a == [str(x) for x in v]
+        elif isinstance(v, str):
+            a = a.decode() if isinstance(a, bytes) else str(a)
+            same = a == v
+        else:
+            same = np.isclose(float(a), float(v), rtol=1e-12, atol=0.)
+        if not same:
+            mismatch.append('%s: %s in the ML file, %s here' %(k, a, v))
+    if len(mismatch) > 0:
+        raise ValueError('The ML file was computed on different data:\n  ' + '\n  '.join(mismatch))
+    print('ML file computed on the same data as this run (waveform, frequency grid, network, PSDs and noise).')
+
+#####################################################################################
 # input/output logic
 #####################################################################################
 
@@ -46,7 +87,7 @@ class Logger(object):
         pass    
 
     def close(self):
-        self.log.close
+        self.log.close()
         sys.stdout = sys.__stdout__
         
     def isatty(self):
@@ -140,6 +181,10 @@ def to_file_snr_opt_info(SNR_opt_info, out_path, suff='', verbose=True):
         for key, value in SNR_opt_info.items():
             pg = f.create_group(str(key))
             for subkey, subvalue in value.items():
+                if not isinstance(subvalue, dict):
+                    # no individual modes: one optimal SNR^2 per detector
+                    pg.create_dataset(subkey, data=[subvalue], compression='gzip', shuffle=False)
+                    continue
                 sub_pg = pg.create_group(subkey)
                 for subsubkey, subsubvalue in subvalue.items():
                     if isinstance(subsubvalue, dict):
@@ -160,7 +205,10 @@ def from_file_snr_opt_info(out_path, suff='', verbose=True):
             SNR_opt_info_loaded[int(key)] = {}
             pg = f[key]
             for subkey in pg.keys():
-                SNR_opt_info_loaded[int(key)][subkey] = {subsubkey: pg[subkey][subsubkey][()][0] for subsubkey in pg[subkey].keys()}
+                if isinstance(pg[subkey], h5py.Group):
+                    SNR_opt_info_loaded[int(key)][subkey] = {subsubkey: pg[subkey][subsubkey][()][0] for subsubkey in pg[subkey].keys()}
+                else:
+                    SNR_opt_info_loaded[int(key)][subkey] = pg[subkey][()][0]
                 
     return SNR_opt_info_loaded
 
@@ -199,6 +247,35 @@ def get_events_subset(evs, detected):
 
     """
     return get_event(evs, np.argwhere(detected))    
+
+def load_population(name, nEventsUse=None, keys_skip=[]):
+    
+    """
+    Load a dictionary containing the events parameters in h5 file, compute some useful combinations and perform checks.
+    
+    :param str name: The name of the file to load the events from. This has to include the path and the ``h5`` or ``hdf5`` extension.
+    :param int or None nEventsUse: Number of the events in the given file to load.
+    :type kind: int or None
+    :param list(str) calculate_params: Parameters not present in the file to compute. The supported parameters are ``'LambdaTilde'``, ``'deltaLambda'``, ``'Lambda1'``, ``'Lambda2'``, ``'theta'``, ``'phi'``, ``'ra'``, ``'dec'``.
+    :param list(str) keys_skip: Parameters present in the file to skip.
+    
+    :return: Dictionary containing the loaded events, as in :py:data:`events`.
+    :rtype: dict(array, array, ...)
+    
+    """
+    
+    events={}
+    with h5py.File(name, 'r') as f:
+        for key in f.keys():
+            if key not in keys_skip:
+                events[key] = np.array(f[key])
+            else:
+                print('Skipping %s' %key)
+        if nEventsUse is not None:
+            for key in f.keys():
+                events[key]=events[key][:nEventsUse]
+    
+    return events
 
 def save_events(fname, data):
     """
@@ -267,6 +344,16 @@ def main(idx, FLAGS):
         print('------ Waveform:------\n%s' %wf_model_name)
         print('----------------------\n')
         
+        if FLAGS.wf_model_filter is None:
+            wf_model_filter = None
+        else:
+            lalargs_filter = FLAGS.lalargs if FLAGS.lalargs_filter is None else FLAGS.lalargs_filter
+            wf_model_filter = wf.LAL_WF(FLAGS.wf_model_filter.split('-')[1], is_tidal='tidal' in lalargs_filter, is_HigherModes='HM' in lalargs_filter, is_Precessing='precessing' in lalargs_filter, is_eccentric='eccentric' in lalargs_filter)
+            if hasattr(wf_model_filter, 'fRef'):
+                wf_model_filter.fRef = FLAGS.fmin
+        if FLAGS.fname_ML != '':
+            print('------ Filter: ML parameters from %s, waveform %s ------\n' %(FLAGS.fname_ML, wf_model_name if FLAGS.wf_model_filter is None else FLAGS.wf_model_filter))
+        
         modes_used = FLAGS.modes_list
         if 'all' in modes_used:
             modes_used = None
@@ -281,6 +368,10 @@ def main(idx, FLAGS):
                                                         individual_modes=modes_used
                                                         )
         
+        noise_seed = FLAGS.noise_parent_seed if FLAGS.add_noise else None
+        if FLAGS.add_noise:
+            print('Adding Gaussian noise with parent seed %s' %noise_seed)
+        
         ti_evs=  time.time()
         for it in range( FLAGS.all_n_it_pools[idx] ):
             ti_loop=  time.time()
@@ -288,6 +379,8 @@ def main(idx, FLAGS):
             idxf=FLAGS.idxs_lists[str(idx)][it][1]  
             
             ev_chunk = FLAGS.events_lists[str(idx)][it] 
+            catidx_chunk = FLAGS.catidx_lists[str(idx)][it]
+            filt_chunk = FLAGS.filter_lists[str(idx)][it]
             nevents_chunk = len(ev_chunk['dL'])
             
             i_in = idxin+FLAGS.idx_in
@@ -305,7 +398,9 @@ def main(idx, FLAGS):
             
             for iev in range(nevents_chunk):
                 tmpev = {k: ev_chunk[k][iev] for k in ev_chunk.keys()}
-                SNR_ts_chunk[iev+i_in], SNR_sq_opt_chunk[iev+i_in] = ts_simulator.injectSignal(tmpev, wf_model, df=1./8.)
+                tmpfilt = None if filt_chunk is None else {k: filt_chunk[k][iev] for k in filt_chunk.keys()}
+                # results are keyed by the index of the event in the catalog
+                SNR_ts_chunk[int(catidx_chunk[iev])], SNR_sq_opt_chunk[int(catidx_chunk[iev])] = ts_simulator.injectSignal(tmpev, wf_model, df=FLAGS.df_data, noise_seed=noise_seed, event_idx=catidx_chunk[iev], filterParams=tmpfilt, waveform_filter=wf_model_filter)
             
             to_file_snr_timeseries(SNR_ts_chunk, FLAGS.fout, suff=suffstr, verbose=True)
             to_file_snr_opt_info(SNR_sq_opt_chunk, FLAGS.fout, suff=suffstr, verbose=True)
@@ -336,7 +431,7 @@ parser.add_argument("--idx_f", default=None, type=int, required=False, help='Ind
 parser.add_argument("--fmin", default=2., type=float, required=False, help='Minimum frequency of the grid, in Hz.')
 parser.add_argument("--fmax", default=4096., type=float, required=False, help='Maximum frequency of the grid, in Hz.')
 parser.add_argument("--net", nargs='+', default=['L1', ], type=str, required=False, help='The network of detectors to be used, separated by *single spacing*.')
-parser.add_argument("--psds", nargs='+', default=['AplusDesign.txt', ], type=str, required=False, help='The paths to PSDs of each detector in the network inside the folder ``psds/``, separated by *single spacing*.')
+parser.add_argument("--psds", nargs='+', default=['ET-0000A-18.txt', ], type=str, required=False, help='The paths to PSDs of each detector in the network inside the folder ``psds/``, separated by *single spacing*.')
 parser.add_argument("--mpi", default=0, type=int, required=False, help='Int specifying if the code has to parallelize using multiprocessing (``0``), or using MPI (``1``), suitable for clusters.')
 parser.add_argument("--lalargs", nargs='+', default=['HM'], type=str, required=False, help='Specifications of the waveform when using ``LAL`` interface, separated by *single spacing*.')
 parser.add_argument("--resume_run", default=0, type=int, required=False, help='Int specifying whether to resume previous run. In this case the parent seed structure is preserved.')
@@ -345,6 +440,11 @@ parser.add_argument("--reference_detector", default='L1', type=str, required=Fal
 parser.add_argument("--is_ASD", default=True, type=bool, required=False, help='If ``True``, the PSDs are considered as ASD (Amplitude Spectral Density) instead of PSD (Power Spectral Density).')
 parser.add_argument("--time_interval", default=40., type=float, required=False, help='Time interval in ms for the SNR time series.')
 parser.add_argument("--df_integrals", default=1./4096., type=float, required=False, help='Frequency step for the integrals in Hz.')
+parser.add_argument("--add_noise", default=0, type=int, required=False, help='Int specifying whether to add Gaussian noise to the data (``1``) or not (``0``).')
+parser.add_argument("--fname_ML", default='', type=str, required=False, help='Path to an ML_params file of compute_ML_from_catalog.py computed on the same data (catalog, waveform, network, PSDs, fmin, fmax, noise). If given, the data are filtered with the ML parameters of each event instead of the injection ones. It has to contain all the selected events.')
+parser.add_argument("--wf_model_filter", default=None, type=str, required=False, help='Name of the waveform model of the filter, if different from the injection one (only with **--fname_ML**).')
+parser.add_argument("--lalargs_filter", nargs='+', default=None, type=str, required=False, help='Specifications of the filter waveform, separated by *single spacing* (default: **--lalargs**).')
+parser.add_argument("--noise_parent_seed", default=42, type=int, required=False, help='Parent seed of the noise. The noise of each event depends only on this seed, the index of the event in the catalog and the detector name, see SNRtsNoise.py.')
 
 if __name__ =='__main__':
     
@@ -364,14 +464,15 @@ if __name__ =='__main__':
         raise ValueError('Path to catalog does not exist. Value entered: %s' %fname_obs)
     
     print('Loading events from %s...' %fname_obs)
-    events_loaded = utils.load_population(fname_obs)
+    events_loaded = load_population(fname_obs)
     
     keylist=list(events_loaded.keys())
     nevents_total = len(events_loaded[keylist[0]])
     print('This catalog has %s events.' %nevents_total)
     
     if FLAGS.fname_snrs != '':
-        snrs_loaded = np.array([np.loadtxt(FLAGS.fname_snrs)])
+        snrs_loaded = np.ravel(np.loadtxt(FLAGS.fname_snrs))
+        assert len(snrs_loaded)==nevents_total, 'The SNR file has to contain one SNR per event of the catalog.'
     else:
         snrs_loaded = np.full_like(events_loaded[keylist[0]], FLAGS.snr_th + 1)
         
@@ -387,6 +488,8 @@ if __name__ =='__main__':
     # Select the events with SNR above the threshold
     detected = snrs_loaded > FLAGS.snr_th
     events = get_events_subset(events_loaded, detected)
+    # Index of each selected event in the original catalog, used to generate its noise
+    catalog_idxs = np.arange(FLAGS.idx_in, FLAGS.idx_in+nevents_total)[np.ravel(detected)]
     print('Detected events with SNR > %s: %s' %(FLAGS.snr_th, np.sum(detected)))
 
     nevents_total = len(events[keylist[0]])
@@ -397,6 +500,27 @@ if __name__ =='__main__':
 
         _ = events.pop('theta', None)
         _ = events.pop('phi', None)
+
+    # Frequency step of the data
+    FLAGS.df_data = 1./8.
+    filters = None
+    if FLAGS.fname_ML != '':
+        print('Loading ML parameters from %s...' %FLAGS.fname_ML)
+        with h5py.File(FLAGS.fname_ML, 'r') as f:
+            res_ML = {key: f[key][()] for key in f.keys()}
+            attrs_ML = dict(f.attrs)
+        check_ML_attrs(attrs_ML, FLAGS, FLAGS.df_data)
+        if FLAGS.wf_model_filter is None and 'wf_model_rec' in attrs_ML and attrs_ML['wf_model_rec'] != FLAGS.wf_model:
+            print('WARNING: the ML parameters were found with %s, while the filter uses %s (see --wf_model_filter).' %(attrs_ML['wf_model_rec'], FLAGS.wf_model))
+        rows = {int(c): i for i, c in enumerate(res_ML['catalog_idx'])}
+        missing = [int(c) for c in catalog_idxs if int(c) not in rows]
+        if len(missing) > 0:
+            raise ValueError('%s selected events are not in the ML file (first ones: %s).' %(len(missing), missing[:10]))
+        pos = np.array([rows[int(c)] for c in catalog_idxs], dtype=int)
+        filters = {k: np.asarray(v)[pos] for k, v in res_ML.items() if k not in ML_NONPARAM_KEYS and not k.startswith('snr_')}
+        print('Filter parameters from the ML file: %s' %list(filters.keys()))
+        if 'ML_fallback' in res_ML:
+            print('%s/%s events with ML search not converged, filtered with the injection parameters (ML_fallback).' %(int(np.sum(res_ML['ML_fallback'][pos])), len(pos)))
 
     #########################################################################################
     # SPLIT EVENTS BETWEEN PROCESSES ACCORDING TO BATCH SIZE AND NUMBER OF PROCESSES REQUIRED
@@ -488,6 +612,8 @@ if __name__ =='__main__':
     
     events_lists = {str(i):[] for i in range(npools)}
     idxs_lists = {str(i):[] for i in range(npools)}
+    catidx_lists = {str(i):[] for i in range(npools)}
+    filter_lists = {str(i):[] for i in range(npools)}
     
     pin=0
     for it in range(all_batch_sizes.shape[0]): # iterations
@@ -496,6 +622,8 @@ if __name__ =='__main__':
             if pf>pin:
                 events_lists[str(p)].append({k: events[k][pin:pf] for k in events.keys()})
                 idxs_lists[str(p)].append( (pin, pf) )
+                catidx_lists[str(p)].append(catalog_idxs[pin:pf])
+                filter_lists[str(p)].append(None if filters is None else {k: filters[k][pin:pf] for k in filters.keys()})
                 nevents_chunk = len(events_lists[str(p)][-1]['dL'])
                 assert nevents_chunk == all_batch_sizes[it, p]
                 pin = pf
@@ -509,6 +637,8 @@ if __name__ =='__main__':
     FLAGS.all_n_it_pools = all_n_it_pools
     FLAGS.events_lists = events_lists
     FLAGS.idxs_lists = idxs_lists
+    FLAGS.catidx_lists = catidx_lists
+    FLAGS.filter_lists = filter_lists
     
     ############################################################################
     # Run processes in parallel
@@ -564,6 +694,20 @@ if __name__ =='__main__':
     save_events(fname_out, events)
     idxs_det = np.arange(FLAGS.idx_in, int(idxf))[np.argwhere(snrs_loaded>FLAGS.snr_th)]
     np.savetxt(os.path.join(FLAGS.fout, 'idxs_det'+suffstr+'.txt'), idxs_det) 
+    if filters is not None:
+        # Parameters used in the filter of each event, with the ML diagnostics
+        filters_out = dict(filters)
+        filters_out['catalog_idx'] = catalog_idxs
+        for k in ('tGPS', 'ML_status', 'ML_fallback', 'ML_twoDeltalnL'):
+            if k in res_ML:
+                filters_out[k] = np.asarray(res_ML[k])[pos]
+        fname_filt = os.path.join(FLAGS.fout, 'filter_params'+suffstr+'.hdf5')
+        print('Saving filter parameters to %s' %fname_filt)
+        with h5py.File(fname_filt, 'w') as f:
+            for key, value in filters_out.items():
+                f.create_dataset(key, data=value, compression='gzip', shuffle=False)
+            f.attrs['fname_ML'] = os.path.abspath(FLAGS.fname_ML)
+            f.attrs['wf_model_filter'] = FLAGS.wf_model if FLAGS.wf_model_filter is None else FLAGS.wf_model_filter
     
     if (FLAGS.npools>1) or (FLAGS.npools==1 and all_n_it_pools[0]>1): 
         print('Cleaning...')

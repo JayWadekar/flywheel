@@ -405,7 +405,7 @@ class LAL_WF(WaveFormModel):
                                                             S1x = chi1x, S1y = chi1y, S1z = chi1z,
                                                             S2x = chi2x, S2y = chi2y, S2z = chi2z,
                                                             distance = dL*glob.uGpc, inclination = iota,
-                                                            phiRef = 0., longAscNodes=0., eccentricity=ecc,
+                                                            phiRef = phase, longAscNodes=0., eccentricity=ecc,
                                                             meanPerAno = 0., deltaF=delta_f, f_min=fmin-delta_f,
                                                             f_max=fmax, f_ref=fRef, LALpars=lal_pars,
                                                             approximant=self.approx)

@@ -18,18 +18,7 @@ Path to the ``gwfast`` directory.
 
 :type: str
 """
-detPath=os.path.join(dirName, 'psds')
-"""
-Path to the ``./psds`` directory, containing the provided detector PSDs.
 
-:type: str
-"""
-WFfilesPath = os.path.join(dirName, 'WFfiles')
-"""
-Path to the ``./WFfiles`` directory, containing files needed for the waveform evaluation.
-
-:type: str
-"""
 ##############################################################################
 # PHYSICAL CONSTANTS
 ##############################################################################

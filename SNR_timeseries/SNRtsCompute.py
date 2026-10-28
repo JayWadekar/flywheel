@@ -6,6 +6,10 @@ import numpy as np
 
 import SNRtsGlobals as glob
 import SNRtsUtils as utils
+import SNRtsNoise as noise
+
+# GMST (in days) advanced per SI second
+GMST_RATE = 1.002737909350795/(3600.*24.)
 
 class simulate_SNR_timeseries(object):
     def __init__(self, detNet, 
@@ -49,32 +53,52 @@ class simulate_SNR_timeseries(object):
             self.compute_individual_modes = True
             self.individual_modes = individual_modes
         
-    def injectSignal(self, evParams, waveform, df=1./8.):
-        
+    def injectSignal(self, evParams, waveform, df=1./8., noise_seed=None, event_idx=None, filterParams=None, waveform_filter=None):
+        # If noise_seed is not None, Gaussian noise is added to the signal in each detector. The realisation depends only on
+        # (noise_seed, event_idx, detector name), see SNRtsNoise.py, so that the same data can be reconstructed in the ML codes.
+        # event_idx has to be the index of the event in the original catalog.
+        # If filterParams is not None, the filter is computed with evParams updated with filterParams (e.g. the ML parameters,
+        # with the time given as an offset dtGPS from evParams['tGPS']), using waveform_filter (default: the injection waveform).
+        if noise_seed is not None:
+            assert event_idx is not None, 'The catalog index of the event is needed to generate the noise.'
+
         missing_params = [p for p in waveform.parameters if p not in evParams]
         assert not missing_params, f"Missing parameters: {missing_params}"
-        
+
         tGMST = utils.GPSt_to_LMST(evParams['tGPS'], 0., 0.)
-        
+
         fcut = waveform.fcut(**evParams)
         fcut = min(fcut, self.fmax)
         f = np.arange(self.fmin, fcut + df, df)
         self.fgrid = f
         hp, hc = waveform.hphc(f, **evParams)
         hp, hc = hp*np.exp(1j*(2*np.pi*f*tGMST*3600.*24)), -hc*np.exp(1j*(2*np.pi*f*tGMST*3600.*24))
-        
+
+        # Parameters, waveform and time of the filter
+        if filterParams is None:
+            fParams, fwaveform, tGMST_f, tGPS_f = evParams, waveform, tGMST, evParams['tGPS']
+            hp_f = hp
+        else:
+            fwaveform = waveform if waveform_filter is None else waveform_filter
+            fParams = dict(evParams)
+            fParams.update({k: v for k, v in filterParams.items() if k != 'dtGPS'})
+            dtGPS = filterParams.get('dtGPS', 0.)
+            tGMST_f, tGPS_f = tGMST + GMST_RATE*dtGPS, evParams['tGPS'] + dtGPS
+            hp_f, _ = fwaveform.hphc(f, **fParams)
+            hp_f = hp_f*np.exp(1j*(2*np.pi*f*tGMST_f*3600.*24))
+
         if self.compute_individual_modes:
             hp_indiv = {}
-            tmpparams = copy.deepcopy(evParams)
+            tmpparams = copy.deepcopy(fParams)
             tmpparams['iota'] = np.pi*0.5  # Set inclination to 90 degrees for individual modes
             for mode in self.individual_modes:
                 l, m = int(mode[0]), int(mode[1])
                 tmpparams['modes'] = [[l, m], [l, -m]]
-                hp_indiv[mode], _ = waveform.hphc(f, **tmpparams)
-                hp_indiv[mode] = hp_indiv[mode]*np.exp(1j*(2*np.pi*f*tGMST*3600.*24))
-                
+                hp_indiv[mode], _ = fwaveform.hphc(f, **tmpparams)
+                hp_indiv[mode] = hp_indiv[mode]*np.exp(1j*(2*np.pi*f*tGMST_f*3600.*24))
+
         taus = np.arange(-self.time_interval, self.time_interval + self.df_integrals, self.df_integrals)
-        
+
         # Now compute the SNR time series for each detector
         SNR_ts     = {}
         SNR_sq_opt = {}
@@ -86,23 +110,25 @@ class simulate_SNR_timeseries(object):
                 totSNR_sq[mode] = 0.
             totSNR_sq['all_modes'] = 0.
             modes_correlation = {}
-            
+
         for det in self.detNet.keys():
             strainGrids = np.interp(f, self.PSDs[det][:,0], self.PSDs[det][:,1], left=1., right=1.)
-            
+
             t = tGMST
             tmpDeltLoc = utils.DeltLoc(self.lat_rad[det], self.long_rad[det], self.elevation[det], evParams['ra'], evParams['dec'], t)
             #t = t + tmpDeltLoc/(3600.*24.)
-            
+
             phiL = 2.*np.pi*f*tmpDeltLoc
             # Compute the pattern functions
             Fp, Fc = utils.PatternFunction(self.lat_rad[det], self.long_rad[det], self.xax_rad[det], self.angbtwArms[det], evParams['ra'], evParams['dec'], t, evParams['psi'])
             detsignal = hp * Fp * np.exp(1j*phiL) + hc * Fc * np.exp(1j*phiL)
-            
+            if noise_seed is not None:
+                detsignal = detsignal + noise.generate_noise(f, self.PSDs[det][:,0], self.PSDs[det][:,1], noise_seed, event_idx, det, df=df)
+
             if not self.compute_individual_modes:
                 # first the optimal SNR and autocorrelation of the template
-                SNR_sq_opt[det] = abs(4*np.sum(abs(hp)**2 / strainGrids, axis=0) * df)
-                SNRs_sq_tot = 4.*np.sum(detsignal[:, None] * np.exp(-2j*np.pi*f[:, None]*taus[None, :]) * np.conjugate(hp)[:, None] / strainGrids[:, None], axis=0) * df
+                SNR_sq_opt[det] = abs(4*np.sum(abs(hp_f)**2 / strainGrids, axis=0) * df)
+                SNRs_sq_tot = 4.*np.sum(detsignal[:, None] * np.exp(-2j*np.pi*f[:, None]*taus[None, :]) * np.conjugate(hp_f)[:, None] / strainGrids[:, None], axis=0) * df
                 totSNR_sq += SNR_sq_opt[det]
                 # Store the SNR time series
                 SNR_ts[det] = SNRs_sq_tot/np.sqrt(SNR_sq_opt[det])
@@ -118,7 +144,7 @@ class simulate_SNR_timeseries(object):
                     totSNR_sq[mode] += SNR_sq_opt[det][mode]
                     SNR_sq_opt[det]['all_modes'] += SNR_sq_opt[det][mode]
                     totSNR_sq['all_modes'] += SNR_sq_opt[det][mode]
-                
+
                 if det == self.reference_detector:
                     for i, mode in enumerate(self.individual_modes):
                         for j, mode2 in enumerate(self.individual_modes):
@@ -134,9 +160,9 @@ class simulate_SNR_timeseries(object):
                 SNR_sq_opt['net'][mode] = totSNR_sq[mode]
             SNR_sq_opt['net']['all_modes'] = totSNR_sq['all_modes']
             SNR_sq_opt['modes_correlation'] = modes_correlation
-        
-        SNR_ts['tgrid'] = taus + evParams['tGPS']
-        
+
+        SNR_ts['tgrid'] = taus + tGPS_f
+
         return SNR_ts, SNR_sq_opt
 
 class modeSNR_ratio(object):
