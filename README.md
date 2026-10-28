@@ -19,7 +19,8 @@ HDF5/text products used for the population study are not checked into git.
 
 - `src/flywheel/`: reusable Python package.
 - `SNR_timeseries/`: scripts used to generate mode-by-mode SNR time series and
-  mode-amplitude ratio inputs from an event catalog.
+  mode-amplitude ratio inputs from an event catalog, including
+  `compute_fisher_samples.py` (Fisher-matrix intrinsic samples).
 - `examples/low_latency_pe.ipynb`: notebook showing one-event inference.
 - `examples/low_latency_pe.py`: jupytext text version of the same notebook,
   useful for clean diffs and scripted execution.
@@ -128,6 +129,47 @@ is ignored by git.  It generates the SNR time series from the one-event catalog
 and generates the higher-mode ratio files from the bundled intrinsic-sample
 file.  The intrinsic-sample file itself is an upstream input to this step, not
 an output of the SNR-timeseries scripts.
+
+## Generating Intrinsic Samples from a Fisher Matrix
+
+`SNR_timeseries/compute_fisher_samples.py` produces the `sampled*.h5` file and
+the matching `snrs_{22,33,44}_*` mode-ratio files in one step.  For each event
+in a catalog of true or maximum-likelihood parameters, it:
+
+1. computes the network Fisher matrix with `flywheel.fisher`, using bilby's
+   IMRPhenomXHM waveform and detector response,
+2. draws (Mc, eta, chi1z, chi2z) samples from the intrinsic covariance with
+   the extrinsic parameters marginalized, optionally times an aligned-spin prior,
+3. computes the mode SNRs of each sample at iota = pi/2 with
+   `SNRtsCompute.modeSNR_ratio`.
+
+```bash
+python SNR_timeseries/compute_fisher_samples.py \
+    --fname_obs data/example/snr_timeseries/detected_events_0_to_1.hdf5 \
+    --fout outputs/fisher_samples --net L1 H1 Virgo \
+    --psds $PSDS/AplusDesign.txt $PSDS/AplusDesign.txt $PSDS/avirgo_O5low_NEW.txt \
+    --fmin_fisher 20 --fmax_fisher 1024 --spin_amax 0.6
+```
+
+The PSD files are ASDs.  `$PSDS` above is gwfast's
+`psds/observing_scenarios_paper/` directory (O5: A+ design for H1/L1,
+avirgo_O5low_NEW for Virgo), which is not bundled with this repository.
+
+Notes:
+
+- Use `--fisher_modes HM` for the samples of the 22+HM run and
+  `--fisher_modes 22` for the 22-only run.  The 22-only run draws m2 directly
+  from its samples, without mode-ratio weighting, so it should not get samples
+  that already carry higher-mode information.
+- Match `--fmin_fisher` to the analysis you compare with.  For a GW190814-like
+  O5 event, sd(m2_det) is 0.030 at 10 Hz and 0.041 at 20 Hz.
+- Derivatives use a 4th-order stencil with step sizes tuned for XHM.  Very
+  small finite-difference steps reach the waveform's numerical-noise floor and
+  spuriously tighten (eta, chi1z, chi2z).  `flywheel.fisher.step_convergence`
+  checks this for a new kind of source.
+- With `--fmin_fisher 20 --spin_amax 0.6`, the GW190814-like example gives
+  sd(m2_det, q, chi1z, chi2z) = 0.041, 0.0041, 0.027, 0.172.  A bilby full-PE
+  run with the same settings gives 0.040, 0.0040, 0.027, 0.165.
 
 ## Citation
 
