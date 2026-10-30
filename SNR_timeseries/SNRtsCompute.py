@@ -11,6 +11,24 @@ import SNRtsNoise as noise
 # GMST (in days) advanced per SI second
 GMST_RATE = 1.002737909350795/(3600.*24.)
 
+def timeseries_sum(a, f, df, taus):
+    '''
+    sum_k a[k] exp(-2 pi i f[k] taus[m]) for all m, on the linear grids f = f[0] + k*df, taus = taus[0] + m*dtau.
+
+    If 1/(df*dtau) is an integer N, this is one N-point FFT: exp(-2 pi i k m df dtau) = exp(-2 pi i k m/N), with the
+    bins k folded modulo N (exact). Otherwise the direct O(len(f) len(taus)) sum is used.
+    '''
+    dtau = taus[1] - taus[0] if len(taus) > 1 else 1.
+    N = 1./(df*dtau)
+    if len(taus) < 2 or abs(N - round(N)) > 1e-9*N or not np.allclose(np.diff(taus), dtau, rtol=1e-9, atol=0.):
+        return np.sum(a[:, None] * np.exp(-2j*np.pi*f[:, None]*taus[None, :]), axis=0)
+    N = int(round(N))
+    k = np.arange(len(f))
+    folded = np.bincount(k % N, weights=(a*np.exp(-2j*np.pi*k*df*taus[0])).real, minlength=N) \
+        + 1j*np.bincount(k % N, weights=(a*np.exp(-2j*np.pi*k*df*taus[0])).imag, minlength=N)
+    m = np.arange(len(taus))
+    return np.exp(-2j*np.pi*f[0]*taus) * np.fft.fft(folded)[m % N]
+
 class simulate_SNR_timeseries(object):
     def __init__(self, detNet, 
                  is_ASD=False, 
@@ -128,7 +146,7 @@ class simulate_SNR_timeseries(object):
             if not self.compute_individual_modes:
                 # first the optimal SNR and autocorrelation of the template
                 SNR_sq_opt[det] = abs(4*np.sum(abs(hp_f)**2 / strainGrids, axis=0) * df)
-                SNRs_sq_tot = 4.*np.sum(detsignal[:, None] * np.exp(-2j*np.pi*f[:, None]*taus[None, :]) * np.conjugate(hp_f)[:, None] / strainGrids[:, None], axis=0) * df
+                SNRs_sq_tot = 4.*timeseries_sum(detsignal * np.conjugate(hp_f) / strainGrids, f, df, taus) * df
                 totSNR_sq += SNR_sq_opt[det]
                 # Store the SNR time series
                 SNR_ts[det] = SNRs_sq_tot/np.sqrt(SNR_sq_opt[det])
@@ -139,7 +157,7 @@ class simulate_SNR_timeseries(object):
                 SNR_sq_opt[det]['all_modes'] = 0.
                 for mode in self.individual_modes:
                     SNR_sq_opt[det][mode] = abs(4*np.sum(abs(hp_indiv[mode])**2 / strainGrids, axis=0) * df)
-                    SNRs_sq_tot = 4.*np.sum(detsignal[:, None] * np.exp(-2j*np.pi*f[:, None]*taus[None, :]) * np.conjugate(hp_indiv[mode])[:, None] / strainGrids[:, None], axis=0) * df
+                    SNRs_sq_tot = 4.*timeseries_sum(detsignal * np.conjugate(hp_indiv[mode]) / strainGrids, f, df, taus) * df
                     SNR_ts[det][mode] = SNRs_sq_tot/np.sqrt(SNR_sq_opt[det][mode])
                     totSNR_sq[mode] += SNR_sq_opt[det][mode]
                     SNR_sq_opt[det]['all_modes'] += SNR_sq_opt[det][mode]
