@@ -21,6 +21,11 @@ HDF5/text products used for the population study are not checked into git.
 - `SNR_timeseries/`: scripts used to generate mode-by-mode SNR time series and
   mode-amplitude ratio inputs from an event catalog, including
   `compute_fisher_samples.py` (Fisher-matrix intrinsic samples).
+- `pp_campaign/`: P-P tests on the simulated O5 population with noisy data and a
+  search-like template: intrinsic posteriors from a Fisher matrix with
+  likelihood refinement, or from a conditional normalizing flow (see
+  `pp_campaign/README.md`).
+- `data/psds/O5/`: O5 ASDs (A+ design, AdV O5 low) used by `pp_campaign/`.
 - `examples/low_latency_pe.ipynb`: notebook showing one-event inference.
 - `examples/low_latency_pe.py`: jupytext text version of the same notebook,
   useful for clean diffs and scripted execution.
