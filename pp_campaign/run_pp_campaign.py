@@ -22,10 +22,20 @@ RHO_CUT = 11.
 OUT = os.environ.get('PP_OUT', os.path.join(config.RESULTS, f"pp_O5_ML_{os.environ.get('PP_CLOUD', 'rb')}"))
 
 
+_CS = None
+
+
+def init_worker():
+    """Build the cogwheel instance (~1 min, event independent) once per worker."""
+    global _CS
+    import o5_data
+    _CS = o5_data.make_cs_instance()
+
+
 def work(iev):
     import run_pp_event
     try:
-        return run_pp_event.process(iev, OUT)
+        return run_pp_event.process(iev, OUT, cs_instance=_CS)
     except Exception as exc:  # keep the campaign going; record the failure
         with open(os.path.join(OUT, f'failed_{iev:05d}.txt'), 'w') as f:
             f.write(repr(exc))
@@ -48,7 +58,7 @@ if __name__ == '__main__':
     todo = [i for i in chosen if not os.path.exists(os.path.join(OUT, f'event_{i:05d}.h5'))]
     print(f'{len(pool_idx)} events with rho_mf > {RHO_CUT}; running {len(todo)} of {n_events} on {n_procs} processes', flush=True)
     t0 = time.time()
-    with Pool(n_procs, maxtasksperchild=20) as pool:
+    with Pool(n_procs, initializer=init_worker) as pool:
         for k, (iev, dt) in enumerate(pool.imap_unordered(work, todo), 1):
             if k % 10 == 0 or dt < 0:
                 print(f'[{time.time() - t0:6.0f} s] {k}/{len(todo)} done (event {iev}: {dt:.0f} s)', flush=True)

@@ -69,14 +69,23 @@ class RBLikelihood:
         dfm = f - np.repeat(fm, stop - starts)
         self.t = np.arange(-lc.T_WINDOW, lc.T_WINDOW + T_STEP/2, T_STEP)
         self.A0, self.A1, self.B = {}, {}, {}
+        # e^{2 pi i f t_j} by recurrence in j (one complex multiply per shift instead of an exp), re-anchored with
+        # an exact exp every 50 shifts to bound round-off
+        step = np.exp(2j*np.pi*f*T_STEP)
+        nz = np.flatnonzero(np.any([lik.invpsd[k] != 0 for k in lik.dets], axis=0))  # skip zero-weight bins
+        lo, hi = nz[0], nz[-1] + 1
+        st = np.clip(starts, lo, hi) - lo
+        keep = np.r_[st[1:] > st[:-1], st[-1] < hi - lo]     # bins with at least one in-band point
         for k in lik.dets:
-            a = lik.data[k]*np.conj(h0[k])*lik.invpsd[k]
-            A0 = np.empty((len(self.t), self.n_bins), complex)
-            A1 = np.empty_like(A0)
+            a = (lik.data[k]*np.conj(h0[k])*lik.invpsd[k])[lo:hi]
+            ad = a*dfm[lo:hi]
+            stp, fl = step[lo:hi], f[lo:hi]
+            A0 = np.zeros((len(self.t), self.n_bins), complex)
+            A1 = np.zeros_like(A0)
             for j, tj in enumerate(self.t):
-                v = a*np.exp(2j*np.pi*f*tj)
-                A0[j] = np.add.reduceat(v, starts)
-                A1[j] = np.add.reduceat(v*dfm, starts)
+                ph = np.exp(2j*np.pi*fl*tj) if j % 50 == 0 else ph*stp
+                A0[j, keep] = np.add.reduceat(a*ph, st[keep])
+                A1[j, keep] = np.add.reduceat(ad*ph, st[keep])
             self.A0[k], self.A1[k] = A0, A1
             b = np.abs(h0[k])**2*lik.invpsd[k]
             self.B[k] = [np.add.reduceat(b*dfm**n, starts) for n in range(3)]

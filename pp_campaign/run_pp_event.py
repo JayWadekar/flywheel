@@ -38,7 +38,16 @@ def adaptive_fisher(fm, p, kappa=KAPPA, n_iter=2):
     s = (np.exp(p['lnMc'])/6.42)**(5/3)
     steps = {k: v*(s if k in fisher.INTRINSIC else 1) for k, v in fisher.DEFAULT_STEPS.items()}
     for _ in range(n_iter + 1):
-        F = fm.fisher(p, steps=steps)
+        # The 4th-order stencil reaches +-2 steps: near the Kerr bound (a few ML templates have |chi2z| ~ 0.999),
+        # evaluate at a spin pulled inside so that every stencil point is physical. The Fisher only seeds the
+        # importance-sampling proposal, so this does not change the cloud's target; other events are unaffected.
+        for k in ('chi1z', 'chi2z'):
+            steps[k] = min(steps[k], 0.45)
+        pe = dict(p, **{k: float(np.clip(p[k], -0.999 + 2*steps[k], 0.999 - 2*steps[k])) for k in ('chi1z', 'chi2z')})
+        # Same at equal mass (eta = 0.25, 19 ML templates in the O5 catalog)
+        steps['eta'] = min(steps['eta'], 0.02)
+        pe['eta'] = float(min(p['eta'], 0.25 - 2.5*steps['eta']))
+        F = fm.fisher(pe, steps=steps)
         steps = {k: kappa/np.sqrt(F[fisher.PARAMS.index(k), fisher.PARAMS.index(k)]) for k in FD_PARAMS}
     return F
 
@@ -57,11 +66,31 @@ def mass_prior_lnMc_eta(Mc_det, eta, z, pop):
     return pop.m12(m1, m2)*M_det**2/np.sqrt(np.clip(1 - 4*eta, 1e-12, None))/(1 + z)**2
 
 
+def cloud_redshift(Mc_det, z_ml, pop, margin=0.03):
+    """Redshift at which the cloud's mass prior is evaluated: z_ML, unless the population has no support at the ML
+    chirp mass there. That happens when the noise throws the ML distance far along the d_L-iota degeneracy (e.g.
+    d_L^ML = 0.19 Gpc for a true 2.4 Gpc): the source-frame masses then leave the population range for every eta.
+    Then the nearest redshift with support (plus a margin) is used. The choice only sets the proposal frame: the
+    final weights move the mass prior to z(d_L) of each sample, with this same redshift in the denominator."""
+    eta = np.linspace(0.02, 0.25, 400)
+    def supported(z):
+        return np.any(mass_prior_lnMc_eta(np.full_like(eta, Mc_det), eta, z, pop) > 0)
+    if supported(z_ml):
+        return z_ml
+    zs = np.linspace(0.001, 2., 2000)
+    ok = np.array([supported(z) for z in zs])
+    if not ok.any():
+        raise RuntimeError(f'no redshift gives population support at Mc_det = {Mc_det:.3f}')
+    j = np.argmin(np.where(ok, np.abs(zs - z_ml), np.inf))
+    return float(zs[j] + np.sign(zs[j] - z_ml)*margin)
+
+
 def credible_level(x, w, truth):
     return float(np.sum(w*(x < truth))/np.sum(w))
 
 
-def process(iev, out_dir, seed=None):
+def process(iev, out_dir, seed=None, cs_instance=None):
+    """cs_instance: a prebuilt od.make_cs_instance() to reuse (it is reseeded per event); built here if None."""
     import cogwheel.cosmology
     t0 = time.time()
     rng = np.random.default_rng(seed if seed is not None else 1000 + iev)
@@ -74,6 +103,7 @@ def process(iev, out_dir, seed=None):
     z_ml = float(cogwheel.cosmology.z_of_d_luminosity(ml['dL']*1000))
 
     info = {}
+    z_cloud = z_ml
     if CLOUD == 'flow':
         sys.path.insert(0, os.path.join(config.HERE, 'flow'))
         import torch
@@ -99,7 +129,8 @@ def process(iev, out_dir, seed=None):
         rbl = rb.RBLikelihood(lik, 0.1)
         info['t_rb_setup_s'] = time.time() - t1
         t1 = time.time()
-        c, cinfo = lc.likelihood_cloud(rbl, p, F, z_ml, pop, rng)
+        z_cloud = cloud_redshift(ml['Mc'], z_ml, pop)
+        c, cinfo = lc.likelihood_cloud(rbl, p, F, z_cloud, pop, rng)
         info['t_cloud_s'] = time.time() - t1
         info.update(cinfo)
         t1 = time.time()
@@ -112,7 +143,9 @@ def process(iev, out_dir, seed=None):
     info['mean_1-match'] = float(np.mean(1 - match))
     t_cloud = time.time() - t0
 
-    cs_instance = od.make_cs_instance()
+    if cs_instance is None:
+        cs_instance = od.make_cs_instance()
+    od.reseed_cs_instance(cs_instance, seed if seed is not None else 1000 + iev)
     dist_factor_ref = cs_instance.lookup_table.d_luminosity_max/cs_instance.lookup_table.REFERENCE_DISTANCE
     times, snr_ts, snr_opt = data.event(iev)
     dh_mtd, hh_md, inc = od.build_inputs(snr_ts, snr_opt, dist_factor_ref)
@@ -145,7 +178,7 @@ def process(iev, out_dir, seed=None):
             post = {**common, 'd_luminosity': dL, 'm2_src': m2_det/(1 + z)}
             # Population reweighting: distance prior, and the mass prior moved from z_ML to z(dL_i)
             num = mass_prior_lnMc_eta(cloud['Mc'][member], cloud['eta'][member], z, pop)
-            den = mass_prior_lnMc_eta(cloud['Mc'][member], cloud['eta'][member], z_ml, pop)
+            den = mass_prior_lnMc_eta(cloud['Mc'][member], cloud['eta'][member], z_cloud, pop)
             w = pop.dL(dL)/dL**2*np.where(den > 0, num/np.where(den > 0, den, 1), 0)
             res[label][tag] = {'post': post, 'w': w,
                                'cl': {k: credible_level(post[k], w, tru[k]) for k in PP_KEYS},

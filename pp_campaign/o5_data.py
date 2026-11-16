@@ -87,7 +87,18 @@ def make_cs_instance(seed=None):
         inst._rng.random()
         inst._qmc_sequences[i] = inst._create_qmc_sequence()
     inst.MAX_LOG2N_QMC = MAX_LOG2N_QMC
-    return inst
+    import fast_distance
+    return fast_distance.patch(inst)      # vectorized d_L draws (same distribution as cogwheel's, ~10x faster)
+
+
+def reseed_cs_instance(inst, seed):
+    """Make one event reproducible with a shared (e.g. forked) instance: reseed the sample selection and the
+    distance draws, and pick the starting QMC sequence from the seed."""
+    import fast_distance
+    inst._rng = np.random.default_rng(seed)
+    inst.lookup_table._rng = np.random.default_rng([seed, 1])
+    inst._current_qmc_sequence_id = seed % len(inst._qmc_sequences)
+    return fast_distance.patch(inst)
 
 
 def gen_samples_from_marg_info(cs_instance, marg_info, num):

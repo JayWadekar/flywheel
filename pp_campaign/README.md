@@ -24,6 +24,8 @@ R44 and their match m = rho_i/rho_ML that feed the cogwheel marginalization:
 | `rb_likelihood.py` | Relative-binning likelihood and fast R33/R44. |
 | `run_pp_event.py` | One event: cloud, cogwheel HM and 22-only runs, distance overlap correction, population weights, credible levels. |
 | `run_pp_campaign.py` | Many events in parallel (event selection: rho_mf > 11, converged ML search). |
+| `run_o5_catalog.py` | Samples for every event of the O5 catalog (16502 events, noisy data, Fisher + refinement), in the layout of the old `Marg_PE_samples_..._O5-IMRPhenomXHM.hdf5` plus population weights. |
+| `fast_distance.py` | Vectorized replacement for cogwheel's per-sample distance draw (same distribution, ~10x faster). |
 | `compute_rho_mf.py` | Matched-filter SNR of every event (needed for the selection). |
 | `flow/make_training_set.py`, `flow/train_flow.py` | Training set from the simulated searches, and the conditional flow. |
 | `make_pp_plot.py` | Diagnostic P-P plot (HM and 22-only panels, KS p-values and offsets; `--m2det` adds m2_det). |
@@ -69,6 +71,12 @@ python make_pp_plot.py $FLYWHEEL_PP_RESULTS/pp_O5_ML_rb $FLYWHEEL_PP_RESULTS/pp_
 ```
 
 A single event: `PP_CLOUD=rb python run_pp_event.py 6 out_dir` (prints timings and credible levels).
+
+# Full O5 catalog (all 16502 events; ~8 h on 72 threads, ~1.7 s per event wall)
+python run_o5_catalog.py /path/to/Marg_PE_samples_..._O5-IMRPhenomXHM_noise42_MLtemplate_fisherRB.hdf5 72
+
+The cogwheel instance (~1 min to build, event independent) is built once and shared by the forked workers; each
+event reseeds it, so results do not depend on the worker. Interrupted runs resume (finished rows are skipped).
 
 The cloud is seeded per event (`1000 + iev`) and reproducible; cogwheel's QMC sequences are not seeded, so credible
 levels vary at the ~0.01 level between reruns and the P-P offsets by ~0.002.

@@ -104,7 +104,14 @@ def likelihood_cloud(lik, p, F22, z, pop, rng, n=rp.N_CLOUD, n_rounds=N_ROUNDS, 
     G[2, 2] += 1/rp.SPIN_REG**2
     G[3, 3] += 1/rp.SPIN_REG**2
     mean0 = np.array([p['lnMc'], p['eta'], p['chi1z'], p['chi2z']])
-    cov0 = INFLATE**2*fisher.intrinsic_covariance(G, 'marginal')
+    try:
+        cov0 = INFLATE**2*fisher.intrinsic_covariance(G, 'marginal')
+    except np.linalg.LinAlgError:
+        # Face-on ML template (iota ~ 0): iota, psi and phi_c are degenerate and F is singular. Add weak priors on
+        # the extrinsic parameters (widths: ln dL 1, iota 1, psi pi, ra pi, dec 1, t_c 0.01 s, phi_c pi); only the
+        # proposal changes
+        G = G + np.diag(np.r_[np.zeros(4), 1/np.array([1., 1., np.pi, np.pi, 1., 0.01, np.pi])**2])
+        cov0 = INFLATE**2*fisher.intrinsic_covariance(G, 'marginal')
     rho_ml = lik.rho(np.exp(mean0[0]), *mean0[1:])
 
     def evaluate(x):
@@ -122,7 +129,8 @@ def likelihood_cloud(lik, p, F22, z, pop, rng, n=rp.N_CLOUD, n_rounds=N_ROUNDS, 
     props = [(mean0, cov0)]
     xs, lps, rs = [], [], []
     ess_rounds = []
-    for k in range(n_rounds):
+    n_done = n_empty = 0
+    while n_done < n_rounds:
         mean, cov = props[-1]
         x = rng.multivariate_normal(mean, cov, size=n_round)
         lp, r = evaluate(x)
@@ -130,10 +138,20 @@ def likelihood_cloud(lik, p, F22, z, pop, rng, n=rp.N_CLOUD, n_rounds=N_ROUNDS, 
         x, lp, r = np.concatenate(xs), np.concatenate(lps), np.concatenate(rs)
         lq = np.logaddexp.reduce([_gauss_logpdf(x, m, c) for m, c in props], axis=0) - np.log(len(props))
         lw = lp + 0.5*r**2 - lq
+        if not np.isfinite(lw).any():
+            # No draw inside the prior support yet: the noise can push the ML template out of it (e.g. m2_src above
+            # the population maximum). Widen the proposal (3x per try) and redraw; the empty round's proposal
+            # stays in the defensive mixture, so the weights remain correct.
+            n_empty += 1
+            if n_empty > 6:
+                raise RuntimeError('cloud: no proposal draw inside the prior support')
+            props.append((mean, 9*cov))
+            continue
         w = np.exp(lw - lw[np.isfinite(lw)].max())
         w[~np.isfinite(lw)] = 0
         ess_rounds.append(float(w.sum()**2/np.sum(w**2)))
         props.append((np.average(x, axis=0, weights=w), INFLATE_LATER**2*np.cov(x.T, aweights=w) + 1e-12*np.eye(4)))
+        n_done += 1
     ess = ess_rounds[-1]
     idx = rng.choice(len(x), size=n, p=w/w.sum())
     cloud = {'Mc': np.exp(x[idx, 0]), 'eta': x[idx, 1], 'chi1z': x[idx, 2], 'chi2z': x[idx, 3],
