@@ -38,12 +38,13 @@ if __name__ == '__main__':
         v = np.sort(cl[k])
         p = stats.kstest(v, 'uniform').pvalue
         ax.plot(np.r_[0, v, 1], np.r_[0, np.arange(1, n + 1)/n, 1], color=mp.COLORS[k], lw=1.6,
-                drawstyle='steps-post', label=rf'{LABELS[k]} ($p={p_text(p)}$)')
+                drawstyle='steps-post', label=LABELS[k])
+        print(f'{k}: KS p = {p_text(p)}')
     ax.plot([0, 1], [0, 1], 'k--', lw=0.8)
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_aspect('equal')
     ax.set_xlabel('Credible interval')
     ax.set_ylabel('Fraction of injections in credible interval')
-    ax.legend(loc='upper left', title=rf'$N={n}$, KS $p$-values', title_fontsize=13, frameon=False)
+    ax.legend(loc='upper left', title=rf'$N={n}$', title_fontsize=13, frameon=False)
     ax.grid(ls=':', lw=0.6, color='0.7')
     fig.tight_layout()
     fig.savefig(out, bbox_inches='tight')
